@@ -295,42 +295,6 @@ void get_parameters(int argc, char *argv[], char *host[], char *radio_port[],
 }
 
 
-void syserr_event(struct event_base *base, const char *fmt, ...) {
-  va_list fmt_args;
-  int err;
-
-  fprintf(stderr, "ERROR: ");
-  err = errno;
-
-  va_start(fmt_args, fmt);
-  if (vfprintf(stderr, fmt, fmt_args) < 0) {
-    fprintf(stderr, " (also error in syserr) ");
-  }
-  va_end(fmt_args);
-  fprintf(stderr, " (%d; %s)\n", err, strerror(err));
-  radio_client_exit_code = EXIT_FAILURE;
-  if (event_base_loopbreak(base) == -1)
-    syserr("event_base_loopbreak");
-}
-
-void fatal_event(struct event_base *base, const char *fmt, ...) {
-  va_list fmt_args;
-  
-  fprintf(stderr, "ERROR: ");
-
-  va_start(fmt_args, fmt);
-  if (vfprintf(stderr, fmt, fmt_args) < 0) {
-    fprintf(stderr, " (also error in fatal) ");
-  }
-  va_end(fmt_args);
-
-  fprintf(stderr, "\n");
-  radio_client_exit_code = EXIT_FAILURE;
-  if (event_base_loopbreak(base) == -1)
-    syserr("event_base_loopbreak");
-}
-
-
 void telnet_listen_cb(evutil_socket_t sock, short what, void *raw_arg) {
   UNUSED(what);
   struct telnet_listen_arg *arg = (struct telnet_listen_arg *) raw_arg;
@@ -340,24 +304,24 @@ void telnet_listen_cb(evutil_socket_t sock, short what, void *raw_arg) {
 
   evutil_socket_t control_sock = accept(sock, (struct sockaddr *)&sin, &addr_size);
   if (control_sock < 0) {
-    syserr_event(arg->base, "accept");
+    syserr_event(arg->base, &radio_client_exit_code, "accept");
     return;
   }
   
   if (evutil_make_listen_socket_reuseable(control_sock)) {
-    syserr_event(arg->base, "evutil_make_listen_socket_reuseable");
+    syserr_event(arg->base, &radio_client_exit_code, "evutil_make_listen_socket_reuseable");
     close(control_sock);
     return;
   }
   
   if(evutil_make_socket_nonblocking(control_sock)) {
-    syserr_event(arg->base, "evutil_make_socket_nonblocking");
+    syserr_event(arg->base, &radio_client_exit_code, "evutil_make_socket_nonblocking");
     close(control_sock);
     return;
   }
 
   if (bufferevent_setfd(arg->bev, control_sock) < 0) {
-    syserr_event(arg->base, "bufferevent_setfd");
+    syserr_event(arg->base, &radio_client_exit_code, "bufferevent_setfd");
     close(control_sock);
     return;
   }
@@ -370,7 +334,7 @@ void telnet_control_init_cb(struct bufferevent *bev, void *raw_arg) {
   struct telnet_control_arg *arg = (struct telnet_control_arg *) raw_arg;
 
   if (bufferevent_write(bev, IAC WILL ECHO IAC WILL SUPPRESS_GO_AHEAD, 6) < 0) {
-    syserr_event(arg->base, "bufferevent_write");
+    syserr_event(arg->base, &radio_client_exit_code, "bufferevent_write");
     return;
   }									     
 
@@ -406,7 +370,7 @@ void telnet_control_read_cb(struct bufferevent *bev, void *raw_arg) {
 void telnet_control_event_cb(struct bufferevent *bev, short what, void *raw_arg) {
   struct telnet_control_arg *arg = (struct telnet_control_arg *) raw_arg;  
   if (what & BEV_EVENT_ERROR)
-    syserr_event(arg->base, "bufferevent");
+    syserr_event(arg->base, &radio_client_exit_code, "bufferevent");
   else if (what & BEV_EVENT_EOF) {
     arg->menu->connected_client = false;
     bufferevent_setcb(bev, NULL, telnet_control_init_cb, telnet_control_event_cb, arg);
@@ -436,14 +400,14 @@ void radio_listen_cb(evutil_socket_t sock, short what, void *raw_arg) {
 
   struct sockaddr_in *client_addr = malloc(sizeof(struct sockaddr_in));
   if (!client_addr) {
-    syserr_event(arg->base, "malloc");
+    syserr_event(arg->base, &radio_client_exit_code, "malloc");
     return;
   }
 
   socklen_t caddr_len = (socklen_t) sizeof(struct sockaddr_in);
   ssize_t r = recvfrom(sock, buf, MAX_UDP, 0, (struct sockaddr *) client_addr, &caddr_len);
   if (r < 0) {
-      syserr_event(arg->base, "recvfrom");
+      syserr_event(arg->base, &radio_client_exit_code, "recvfrom");
       return;
   }
 
@@ -506,7 +470,7 @@ void radio_keep_alive_cb(evutil_socket_t sock, short what, void *raw_arg) {
   uint16_t mes[2];
   mes[0] = htons(KEEPALIVE);
   mes[1] = 0;
-  if (write(sock, mes, 4) != 4) syserr_event(base, "write");
+  if (write(sock, mes, 4) != 4) syserr_event(base, &radio_client_exit_code, "write");
 }
 
 
@@ -539,7 +503,7 @@ void menu_connect_radio(struct event_base *base, struct menu *menu, radio_elem *
   menu->connected_radio = radio;
   
   if (connect(radio_sock, (struct sockaddr *) radio->addr, (socklen_t) sizeof(struct sockaddr_in)) < 0) {
-    syserr_event(base, "connect");
+    syserr_event(base, &radio_client_exit_code, "connect");
     return;
   }
 
@@ -547,14 +511,14 @@ void menu_connect_radio(struct event_base *base, struct menu *menu, radio_elem *
   tv.tv_sec = KEEP_ALIVE_SEC;
   tv.tv_usec = KEEP_ALIVE_USEC;
   if (event_add(menu->keep_alive_timer, &tv) < 0) {
-    syserr_event(base, "event_add");
+    syserr_event(base, &radio_client_exit_code, "event_add");
     return;
   }
 }
 
 void menu_disconnect_radio(struct event_base *base, struct menu *menu, evutil_socket_t radio_sock) {
   if (event_del(menu->keep_alive_timer) < 0) {
-    syserr_event(base, "event_add");
+    syserr_event(base, &radio_client_exit_code, "event_add");
     return;
   }
   
@@ -564,7 +528,7 @@ void menu_disconnect_radio(struct event_base *base, struct menu *menu, evutil_so
   unspec.sa_family = AF_UNSPEC;
       
   if (connect(radio_sock, &unspec, (socklen_t) sizeof(struct sockaddr)) < 0) {
-    syserr_event(base, "connect");
+    syserr_event(base, &radio_client_exit_code, "connect");
     return;
   }
 }
@@ -576,7 +540,7 @@ int option_render(struct bufferevent *bev, struct event_base *base, char *str, b
     r = evbuffer_add_printf(output, SGR_REVERSE_VIDEO "%s%s" SGR_RESET CR LF, str, sel ? " *" : "");
   else
     r = evbuffer_add_printf(output, "%s%s" CR LF, str, sel ? " *" : "");  
-  if (r < 0) syserr_event(base, "evbuffer_add_printf");
+  if (r < 0) syserr_event(base, &radio_client_exit_code, "evbuffer_add_printf");
   return r;
 }
 
@@ -605,13 +569,13 @@ int menu_clear(struct bufferevent *bev, struct event_base *base, struct menu *me
   for (size_t i = 0; i < n - 1; ++i) {
     r = evbuffer_add_printf(output, CSI(2K) CSI(A));
     if (r < 0) {
-      syserr_event(base, "evbuffer_add_printf");
+      syserr_event(base, &radio_client_exit_code, "evbuffer_add_printf");
       return r;
     }
   }
   r = evbuffer_add_printf(output, CSI(2K));
   if (r < 0) {
-    syserr_event(base, "evbuffer_add_printf");
+    syserr_event(base, &radio_client_exit_code, "evbuffer_add_printf");
     return r;
   }
   return 0;
@@ -645,7 +609,7 @@ void menu_exec(struct bufferevent *bev, struct event_base *base, struct menu *me
     mes[1] = 0;
 
     if (write(radio_sock, mes, 4) != 4) {
-      syserr_event(base, "write");
+      syserr_event(base, &radio_client_exit_code, "write");
       return;
     }
     

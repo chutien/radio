@@ -33,7 +33,9 @@
 #define AUDIO 4
 #define METADATA 6
 
+
 static int radio_proxy_exit_code = EXIT_SUCCESS;
+
 
 typedef struct client_elem {
   struct timeval last_seen;
@@ -49,6 +51,7 @@ typedef struct clients_list {
   client_elem *last;
 } clients_list;
 
+
 clients_list *clist_create(struct timeval);
 void clist_push(clients_list *, struct sockaddr_in *);
 void clist_pop(clients_list *, client_elem *);
@@ -57,10 +60,11 @@ client_elem *clist_find(const clients_list *, struct sockaddr_in *);
 void clist_stream(const clients_list *, evutil_socket_t, const unsigned char [], size_t, uint16_t);
 void clist_free(clients_list *);
 
+
 void get_parameters(int, char *[], char *[], char *[], char *[], bool *, struct timeval *,
 		    char *[], char *[], struct timeval *);
-void fatal_event(struct event_base *, const char *, ...);
 bool cmp_header_key(char *, size_t, char *, size_t);
+
 
 void radio_event_cb(struct bufferevent *, short, void *);
 void radio_read_response_line_cb(struct bufferevent *, void *);
@@ -78,6 +82,7 @@ struct buffer_arg {
   struct event_base *base;
 };
 
+
 void proxy_listen_cb(evutil_socket_t, short, void *);
 struct proxy_listen_arg {
   struct timeval proxy_timeout;
@@ -94,6 +99,7 @@ struct proxy_iam_arg {
   clients_list *clist;
   struct event_base *base;
 };
+
 
 void sigint_cb(evutil_socket_t, short, void *);
 
@@ -287,47 +293,12 @@ void get_parameters(int argc, char *argv[], char *host[], char *resource[], char
     fatal("missing required option -- 'p'");
 }
 
-void syserr_event(struct event_base *base, const char *fmt, ...) {
-  va_list fmt_args;
-  int err;
-
-  fprintf(stderr, "ERROR: ");
-  err = errno;
-
-  va_start(fmt_args, fmt);
-  if (vfprintf(stderr, fmt, fmt_args) < 0) {
-    fprintf(stderr, " (also error in syserr) ");
-  }
-  va_end(fmt_args);
-  fprintf(stderr, " (%d; %s)\n", err, strerror(err));
-  radio_proxy_exit_code = EXIT_FAILURE;
-  if (event_base_loopbreak(base) == -1)
-    syserr("event_base_loopbreak");
-}
-
-void fatal_event(struct event_base *base, const char *fmt, ...) {
-  va_list fmt_args;
-  
-  fprintf(stderr, "ERROR: ");
-
-  va_start(fmt_args, fmt);
-  if (vfprintf(stderr, fmt, fmt_args) < 0) {
-    fprintf(stderr, " (also error in fatal) ");
-  }
-  va_end(fmt_args);
-
-  fprintf(stderr, "\n");
-  radio_proxy_exit_code = EXIT_FAILURE;
-  if (event_base_loopbreak(base) == -1)
-    syserr("event_base_loopbreak");
-}
-
 
 void radio_event_cb(struct bufferevent *bev, short what, void *raw_arg) {
   struct buffer_arg *arg = (struct buffer_arg *) raw_arg;
   
   if (what & BEV_EVENT_ERROR) {
-    syserr_event(arg->base, "bufferevent");
+    syserr_event(arg->base, &radio_proxy_exit_code, "bufferevent");
     return;
   }
   
@@ -338,7 +309,7 @@ void radio_event_cb(struct bufferevent *bev, short what, void *raw_arg) {
   }
 
   if (what & BEV_EVENT_TIMEOUT) {
-    fatal_event(arg->base, "A timeout occured.");
+    fatal_event(arg->base, &radio_proxy_exit_code, "A timeout occured.");
     return;
   }
   
@@ -370,7 +341,7 @@ void radio_read_response_line_cb(struct bufferevent *bev, void *raw_arg) {
 	      !strncmp(response_line + 7, "1 ", 2))) {
     i += 9;
   } else {
-    fatal_event(arg->base, "Unexpected response line -- %s\n", response_line);
+    fatal_event(arg->base, &radio_proxy_exit_code, "Unexpected response line -- %s\n", response_line);
     return;
   }
 
@@ -406,7 +377,7 @@ void radio_read_headers_cb(struct bufferevent *bev, void *raw_arg) {
   while ((header_line = evbuffer_readln(buf, &len, EVBUFFER_EOL_CRLF)) && len > 0) {
     if (cmp_header_key(header_line, len, "icy-metaint", 11)) {
       if (!arg->metadata) {
-	fatal_event(arg->base, "Unexpected icy-metaint header.");
+	fatal_event(arg->base, &radio_proxy_exit_code, "Unexpected icy-metaint header.");
 	return;
       }
       char *endptr;
@@ -414,11 +385,11 @@ void radio_read_headers_cb(struct bufferevent *bev, void *raw_arg) {
       uintmax_t val = strtoumax(header_line + 12, &endptr, 10);
       if (endptr == header_line + 12 || *endptr != '\0'
 	  || (errno == ERANGE && val == UINTMAX_MAX) || (errno != 0 && val == 0)) {
-	fatal_event(arg->base, "Could not parse received icy-metaint value.");
+	fatal_event(arg->base, &radio_proxy_exit_code, "Could not parse received icy-metaint value.");
 	return;
       }
       if (val == 0) {
-        fatal_event(arg->base, "Incorrect icy-metaint value.");
+        fatal_event(arg->base, &radio_proxy_exit_code, "Incorrect icy-metaint value.");
 	return;
       }
       arg->metaint = (size_t) val;
@@ -517,6 +488,7 @@ void radio_read_metadata_cb(struct bufferevent *bev, void *raw_arg) {
   }
 }
 
+
 void proxy_listen_cb(evutil_socket_t sock, short what, void *raw_arg) {
   struct proxy_listen_arg *arg = (struct proxy_listen_arg *) raw_arg;
 
@@ -527,7 +499,7 @@ void proxy_listen_cb(evutil_socket_t sock, short what, void *raw_arg) {
   
   struct sockaddr_in *client_addr = malloc(sizeof(struct sockaddr_in));
   if (!client_addr) {
-    syserr_event(arg->base, "malloc");
+    syserr_event(arg->base, &radio_proxy_exit_code, "malloc");
     return;
   }
   
@@ -536,7 +508,7 @@ void proxy_listen_cb(evutil_socket_t sock, short what, void *raw_arg) {
   ssize_t len = recvfrom(sock, mes, 4, 0, (struct sockaddr *) client_addr, &caddr_len);
   
   if (len < 0) {
-      syserr_event(arg->base, "recvfrom");
+      syserr_event(arg->base, &radio_proxy_exit_code, "recvfrom");
       return;
   }
 
@@ -555,7 +527,7 @@ void proxy_listen_cb(evutil_socket_t sock, short what, void *raw_arg) {
 
     struct proxy_iam_arg *iam_arg = malloc(sizeof(struct proxy_iam_arg));
     if (!iam_arg) {
-      syserr_event(arg->base, "malloc");
+      syserr_event(arg->base, &radio_proxy_exit_code, "malloc");
       return;
     }
     
@@ -566,7 +538,7 @@ void proxy_listen_cb(evutil_socket_t sock, short what, void *raw_arg) {
     iam_arg->base = arg->base;
 
     if (event_base_once(arg->base, sock, EV_WRITE, proxy_iam_cb, (void *) iam_arg, NULL) < 0) {
-      syserr_event(arg->base, "event_base_once");
+      syserr_event(arg->base, &radio_proxy_exit_code, "event_base_once");
       return;
     }    
     break;
@@ -716,6 +688,7 @@ void clist_stream(const clients_list *clist, evutil_socket_t proxy_sock, const u
       fprintf(stderr, "ERROR: %s\n", strerror(errno));
   }
 }
+
 
 void clist_free(clients_list *clist) {
   while (clist->len != 0)
